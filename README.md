@@ -8,6 +8,8 @@ It focuses on a simple text-to-image workflow and ships the required Windows nat
 
 - GitHub: [SeasonRealms/SeasonImage](https://github.com/SeasonRealms/SeasonImage)
 
+- stable-diffusion.cpp: https://github.com/leejet/stable-diffusion.cpp
+
 ## Features
 
 - Minimal P/Invoke wrapper over `stable-diffusion.dll`
@@ -89,6 +91,8 @@ using var nativeImageData = new NativeImageData(first.Width, first.Height, rgbaB
 var pngBytes = DeviceServices.Image.SaveImage(nativeImageData, Season.Basic.ImageFormat.Png);
 StorageService.SaveFile(StorageService.DirectoryBase, "SeasonImage.png", pngBytes);
 ```
+
+This is under development...
 
 ## Context Options
 
