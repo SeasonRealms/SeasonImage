@@ -1,19 +1,12 @@
-﻿// Copyright (c) SeasonEngine and contributors.
+// Copyright (c) SeasonEngine and contributors.
 // Licensed under the MIT License.
-//https://github.com/SeasonRealms/SeasonImage
+// https://github.com/SeasonRealms/SeasonImage
 
 namespace SeasonImage;
 
 internal static class NativeMethods
 {
     private const string LibraryName = "stable-diffusion";
-
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct NativeSdEmbedding
-    {
-        public IntPtr name;
-        public IntPtr path;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativeSdCtxParams
@@ -183,6 +176,14 @@ internal static class NativeMethods
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSdLora
+    {
+        public byte is_high_noise;
+        public float multiplier;
+        public IntPtr path;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct NativeSdImgGenParams
     {
         public IntPtr loras;
@@ -217,11 +218,28 @@ internal static class NativeMethods
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate void NativeProgressCallback(int step, int steps, float time, IntPtr data);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    internal delegate void NativePreviewCallback(
+        int step,
+        int frameCount,
+        IntPtr frames,
+        [MarshalAs(UnmanagedType.I1)] bool isNoisy,
+        IntPtr data);
+
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern void sd_set_log_callback(NativeLogCallback? callback, IntPtr data);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern void sd_set_progress_callback(NativeProgressCallback? callback, IntPtr data);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern void sd_set_preview_callback(
+        NativePreviewCallback? callback,
+        int mode,
+        int interval,
+        byte denoised,
+        byte noisy,
+        IntPtr data);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern int sd_get_num_physical_cores();
@@ -273,6 +291,40 @@ internal static class NativeMethods
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern IntPtr sd_version();
 
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    internal static extern bool convert(
+        IntPtr inputPath,
+        IntPtr vaePath,
+        IntPtr outputPath,
+        int outputType,
+        IntPtr tensorTypeRules,
+        [MarshalAs(UnmanagedType.I1)] bool convertName);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern IntPtr new_upscaler_ctx(
+        IntPtr esrganPath,
+        [MarshalAs(UnmanagedType.I1)] bool direct,
+        int nThreads,
+        int tileSize,
+        IntPtr backend,
+        IntPtr paramsBackend);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern void free_upscaler_ctx(IntPtr upscalerCtx);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern NativeSdImage upscale(IntPtr upscalerCtx, NativeSdImage inputImage, uint upscaleFactor);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern int get_upscale_factor(IntPtr upscalerCtx);
+
+    [DllImport("ucrtbase", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    private static extern IntPtr malloc(nuint size);
+
+    [DllImport("ucrtbase", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    private static extern void free(IntPtr ptr);
+
     internal static string PtrToString(IntPtr ptr)
     {
         return ptr == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(ptr) ?? string.Empty;
@@ -282,6 +334,11 @@ internal static class NativeMethods
 
     internal static IReadOnlyList<StableDiffusionImageResult> CopyImages(IntPtr images, int count)
     {
+        if (images == IntPtr.Zero || count <= 0)
+        {
+            return [];
+        }
+
         var result = new List<StableDiffusionImageResult>(count);
         var stride = Marshal.SizeOf<NativeSdImage>();
 
@@ -289,21 +346,48 @@ internal static class NativeMethods
         {
             var ptr = IntPtr.Add(images, i * stride);
             var native = Marshal.PtrToStructure<NativeSdImage>(ptr);
-
-            if (native.data == IntPtr.Zero || native.width == 0 || native.height == 0 || native.channel == 0)
+            if (native.data == IntPtr.Zero)
             {
                 continue;
             }
 
-            checked
-            {
-                var byteCount = (int)(native.width * native.height * native.channel);
-                var bytes = new byte[byteCount];
-                Marshal.Copy(native.data, bytes, 0, byteCount);
-                result.Add(new StableDiffusionImageResult((int)native.width, (int)native.height, (int)native.channel, bytes));
-            }
+            result.Add(CopyImage(native));
         }
 
         return result;
+    }
+
+    internal static StableDiffusionImageResult CopyImage(NativeSdImage native)
+    {
+        if (native.data == IntPtr.Zero || native.width == 0 || native.height == 0 || native.channel == 0)
+        {
+            return new StableDiffusionImageResult(0, 0, 0, []);
+        }
+
+        checked
+        {
+            var byteCount = (int)(native.width * native.height * native.channel);
+            var bytes = new byte[byteCount];
+            Marshal.Copy(native.data, bytes, 0, byteCount);
+            return new StableDiffusionImageResult((int)native.width, (int)native.height, (int)native.channel, bytes);
+        }
+    }
+
+    internal static void ReleaseReturnedImage(NativeSdImage image)
+    {
+        if (image.data == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var wrapper = malloc((nuint)Marshal.SizeOf<NativeSdImage>());
+        if (wrapper == IntPtr.Zero)
+        {
+            free(image.data);
+            return;
+        }
+
+        Marshal.StructureToPtr(image, wrapper, false);
+        free_sd_images(wrapper, 1);
     }
 }

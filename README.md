@@ -121,6 +121,87 @@ Backend = "te=cpu,vae=cpu,diffusion=cuda0";
 ParamsBackend = "te=cpu,vae=cpu,diffusion=cuda0";
 ```
 
+convert ：
+```csharp
+StableDiffusion.Convert(new StableDiffusionConvertOptions
+{
+    InputPath = @"C:\Models\model.safetensors",
+    OutputPath = @"C:\Models\model.gguf",
+    OutputType = StableDiffusionWeightType.F16,
+    ConvertTensorNames = true
+});
+```
+
+LoRA ：
+```csharp
+var images = ctx.GenerateImages(new StableDiffusionImageGenerationOptions
+{
+    Prompt = "masterpiece portrait",
+    Width = 1024,
+    Height = 1024,
+    Loras =
+    [
+        new StableDiffusionLora { Path = @"C:\Lora\style.safetensors", Multiplier = 0.8f }
+    ]
+});
+```
+
+preview callback ：
+```csharp
+StableDiffusion.SetPreviewCallback(
+    preview => Console.WriteLine($"preview step={preview.Step}, frames={preview.Frames.Count}"),
+    new StableDiffusionPreviewCallbackOptions
+    {
+        Mode = StableDiffusionPreviewMode.Vae,
+        Interval = 2,
+        IncludeDenoised = true
+    });
+```
+
+upscaler ：
+```csharp
+using var upscaler = StableDiffusion.CreateUpscaler(new StableDiffusionUpscalerOptions
+{
+    ModelPath = @"C:\Models\RealESRGAN_x4plus_anime_6B.pth",
+    Backend = "cpu",
+    ParamsBackend = "cpu"
+});
+
+var upscaled = upscaler.Upscale(first.ToInputImage(), 4);
+```
+
+img2img ：
+```csharp
+var img2img = ctx.GenerateImages(new StableDiffusionImageGenerationOptions
+{
+    Prompt = "anime illustration",
+    InitImage = first.ToInputImage(),
+    Strength = 0.65f,
+    Width = first.Width,
+    Height = first.Height
+});
+```
+
+controlnet ：
+```csharp
+using var ctx = StableDiffusion.CreateContext(new StableDiffusionContextOptions
+{
+    ModelPath = @"C:\Models\sd15.gguf",
+    ControlNetPath = @"C:\Models\controlnet-canny.safetensors",
+    Backend = "cpu",
+    ParamsBackend = "cpu"
+});
+
+var controlled = ctx.GenerateImages(new StableDiffusionImageGenerationOptions
+{
+    Prompt = "city street at night",
+    ControlImage = cannyImage,
+    ControlStrength = 0.9f,
+    Width = cannyImage.Width,
+    Height = cannyImage.Height
+});
+```
+
 ## Notes
 
 - `stable-diffusion.cpp` progress and log callbacks are global callbacks

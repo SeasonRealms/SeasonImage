@@ -1,6 +1,6 @@
 // Copyright (c) SeasonEngine and contributors.
 // Licensed under the MIT License.
-//https://github.com/SeasonRealms/SeasonImage
+// https://github.com/SeasonRealms/SeasonImage
 
 namespace SeasonImage;
 
@@ -11,6 +11,9 @@ public static class StableDiffusion
 
     private static NativeMethods.NativeProgressCallback? s_progressThunk;
     private static Action<StableDiffusionProgress>? s_progressCallback;
+
+    private static NativeMethods.NativePreviewCallback? s_previewThunk;
+    private static Action<StableDiffusionPreview>? s_previewCallback;
 
     public static bool IsSupported => OperatingSystem.IsWindows();
 
@@ -30,6 +33,7 @@ public static class StableDiffusion
     {
         EnsureSupported();
         s_logCallback = callback;
+
         if (callback is null)
         {
             s_logThunk = null;
@@ -55,6 +59,7 @@ public static class StableDiffusion
     {
         EnsureSupported();
         s_progressCallback = callback;
+
         if (callback is null)
         {
             s_progressThunk = null;
@@ -76,6 +81,49 @@ public static class StableDiffusion
         NativeMethods.sd_set_progress_callback(s_progressThunk, IntPtr.Zero);
     }
 
+    public static void SetPreviewCallback(
+        Action<StableDiffusionPreview>? callback,
+        StableDiffusionPreviewCallbackOptions? options = null)
+    {
+        EnsureSupported();
+        s_previewCallback = callback;
+
+        if (callback is null)
+        {
+            s_previewThunk = null;
+            NativeMethods.sd_set_preview_callback(
+                null,
+                (int)StableDiffusionPreviewMode.None,
+                0,
+                NativeMethods.ToNativeBool(false),
+                NativeMethods.ToNativeBool(false),
+                IntPtr.Zero);
+            return;
+        }
+
+        options ??= new StableDiffusionPreviewCallbackOptions();
+
+        s_previewThunk = static (step, frameCount, frames, isNoisy, _) =>
+        {
+            var managed = s_previewCallback;
+            if (managed is null)
+            {
+                return;
+            }
+
+            var copiedFrames = NativeMethods.CopyImages(frames, frameCount);
+            managed(new StableDiffusionPreview(step, isNoisy, copiedFrames));
+        };
+
+        NativeMethods.sd_set_preview_callback(
+            s_previewThunk,
+            (int)options.Mode,
+            options.Interval <= 0 ? 1 : options.Interval,
+            NativeMethods.ToNativeBool(options.IncludeDenoised),
+            NativeMethods.ToNativeBool(options.IncludeNoisy),
+            IntPtr.Zero);
+    }
+
     public static StableDiffusionContext CreateContext(StableDiffusionContextOptions options)
     {
         EnsureSupported();
@@ -83,12 +131,37 @@ public static class StableDiffusion
         return new StableDiffusionContext(options);
     }
 
+    public static StableDiffusionUpscalerContext CreateUpscaler(StableDiffusionUpscalerOptions options)
+    {
+        EnsureSupported();
+        ArgumentNullException.ThrowIfNull(options);
+        return new StableDiffusionUpscalerContext(options);
+    }
+
+    public static bool Convert(StableDiffusionConvertOptions options)
+    {
+        EnsureSupported();
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.InputPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.OutputPath);
+
+        using var strings = new Utf8StringArena();
+
+        return NativeMethods.convert(
+            strings.Add(options.InputPath),
+            strings.Add(options.VaePath),
+            strings.Add(options.OutputPath),
+            (int)options.OutputType,
+            strings.Add(options.TensorTypeRules),
+            options.ConvertTensorNames);
+    }
+
     internal static void EnsureSupported()
     {
         if (!OperatingSystem.IsWindows())
         {
-            throw new PlatformNotSupportedException("SeasonImage currently ships stable-diffusion native binaries only for Windows.");
+            throw new PlatformNotSupportedException(
+                "SeasonImage currently ships stable-diffusion native binaries only for Windows.");
         }
     }
 }
-
