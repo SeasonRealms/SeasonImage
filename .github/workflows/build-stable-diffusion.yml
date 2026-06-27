@@ -11,6 +11,10 @@ on:
         options:
           - Release
           - Debug
+      stable_diffusion_ref:
+        description: "stable-diffusion.cpp tag / branch / commit (SeasonRealms fork)"
+        required: true
+        default: "master"
       ggml_ref:
         description: "SeasonRealms/ggml tag / branch / commit"
         required: true
@@ -45,7 +49,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SDCPP_REPO }}
-          ref: ${{ github.ref }}
+          ref: ${{ github.event.inputs.stable_diffusion_ref }}
           submodules: false
 
       - name: Replace ggml with SeasonRealms fork
@@ -295,6 +299,7 @@ jobs:
           $manifest = Join-Path $out "README.txt"
           @(
             "SDCPP_REPO: ${{ env.SDCPP_REPO }}",
+            "SDCPP_REF: ${{ github.event.inputs.stable_diffusion_ref }}",
             "Enabled backends: cpu-all-variants, cuda12, vulkan",
             "Configuration: ${{ github.event.inputs.configuration }}",
             "GGML_REPO: ${{ env.GGML_REPO }}",
