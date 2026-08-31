@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 // https://github.com/SeasonRealms/SeasonImage
 
-namespace SeasonImage;
+namespace Season.Image;
 
 internal static class NativeMethods
 {
@@ -212,6 +212,42 @@ internal static class NativeMethods
         public NativeSdHiresParams hires;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSdVidGenParams
+    {
+        public IntPtr loras;
+        public uint lora_count;
+        public IntPtr prompt;
+        public IntPtr negative_prompt;
+        public int clip_skip;
+        public NativeSdImage init_image;
+        public NativeSdImage end_image;
+        public IntPtr control_frames;
+        public int control_frames_size;
+        public int width;
+        public int height;
+        public NativeSdSampleParams sample_params;
+        public NativeSdSampleParams high_noise_sample_params;
+        public float moe_boundary;
+        public float strength;
+        public long seed;
+        public int video_frames;
+        public int fps;
+        public float vace_strength;
+        public NativeSdTilingParams vae_tiling_params;
+        public NativeSdCacheParams cache;
+        public NativeSdHiresParams hires;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSdAudio
+    {
+        public uint sample_rate;
+        public uint channels;
+        public ulong sample_count;
+        public IntPtr data;
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     internal delegate void NativeLogCallback(int level, IntPtr text, IntPtr data);
 
@@ -280,7 +316,22 @@ internal static class NativeMethods
     internal static extern IntPtr generate_image(IntPtr sd_ctx, ref NativeSdImgGenParams img_gen_params);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern void sd_vid_gen_params_init(ref NativeSdVidGenParams vid_gen_params);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    internal static extern bool generate_video(
+        IntPtr sd_ctx,
+        ref NativeSdVidGenParams vid_gen_params,
+        out IntPtr frames_out,
+        out int num_frames_out,
+        out IntPtr audio_out);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern void free_sd_images(IntPtr result_images, int num_images);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern void free_sd_audio(IntPtr audio);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern void sd_cancel_generation(IntPtr sd_ctx, int mode);

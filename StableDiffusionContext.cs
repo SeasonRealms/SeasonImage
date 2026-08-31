@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 // https://github.com/SeasonRealms/SeasonImage
 
-namespace SeasonImage;
+namespace Season.Image;
 
 public sealed class StableDiffusionContext : IDisposable
 {
@@ -44,7 +44,7 @@ public sealed class StableDiffusionContext : IDisposable
         native.tensor_type_rules = strings.Add(options.TensorTypeRules);
         native.max_vram = strings.Add(options.MaxVram);
         native.backend = strings.Add(options.Backend);
-        native.params_backend = strings.Add(options.ParamsBackend);
+        native.params_backend = strings.Add(ResolveParamsBackend(options));
         native.rpc_servers = strings.Add(options.RpcServers);
 
         native.n_threads = options.ThreadCount > 0 ? options.ThreadCount : Environment.ProcessorCount;
@@ -101,6 +101,7 @@ public sealed class StableDiffusionContext : IDisposable
 
         using var strings = new Utf8StringArena();
         using var initImage = PinnedNativeImage.Create(options.InitImage);
+        using var refImages = NativeSdImageArray.Create(options.RefImages);
         using var maskImage = PinnedNativeImage.Create(options.MaskImage);
         using var controlImage = PinnedNativeImage.Create(options.ControlImage);
         using var loras = NativeSdLoraArray.Create(options.Loras, strings);
@@ -112,13 +113,17 @@ public sealed class StableDiffusionContext : IDisposable
         native.prompt = strings.Add(options.Prompt);
         native.negative_prompt = strings.Add(options.NegativePrompt);
         native.clip_skip = options.ClipSkip ?? native.clip_skip;
-        native.width = ResolveDimension(options.Width, initImage?.Width);
-        native.height = ResolveDimension(options.Height, initImage?.Height);
+        native.width = ResolveDimension(options.Width, initImage?.Width, refImages?.FirstWidth);
+        native.height = ResolveDimension(options.Height, initImage?.Height, refImages?.FirstHeight);
         native.strength = options.Strength;
         native.seed = options.Seed;
         native.batch_count = options.BatchCount <= 0 ? 1 : options.BatchCount;
         native.control_strength = options.ControlStrength;
         native.init_image = initImage?.Native ?? default;
+        native.ref_images = refImages?.Pointer ?? IntPtr.Zero;
+        native.ref_images_count = refImages?.Count ?? 0;
+        native.auto_resize_ref_image = NativeMethods.ToNativeBool(options.AutoResizeRefImage);
+        native.increase_ref_index = NativeMethods.ToNativeBool(options.IncreaseRefIndex);
         native.mask_image = maskImage?.Native ?? default;
         native.control_image = controlImage?.Native ?? default;
 
@@ -137,6 +142,10 @@ public sealed class StableDiffusionContext : IDisposable
         native.sample_params.scheduler = (int)scheduler;
         native.sample_params.sample_steps = options.SampleSteps;
         native.sample_params.eta = options.Eta;
+        if (options.FlowShift is not null)
+        {
+            native.sample_params.flow_shift = options.FlowShift.Value;
+        }
         native.sample_params.guidance.txt_cfg = options.GuidanceScale;
         native.sample_params.guidance.img_cfg = options.ImageGuidanceScale;
         native.sample_params.guidance.distilled_guidance = options.DistilledGuidanceScale;
@@ -155,6 +164,118 @@ public sealed class StableDiffusionContext : IDisposable
         finally
         {
             NativeMethods.free_sd_images(imagesPtr, native.batch_count);
+        }
+    }
+
+    public StableDiffusionVideoResult GenerateVideo(StableDiffusionVideoGenerationOptions options)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.Prompt);
+
+        using var strings = new Utf8StringArena();
+        using var initImage = PinnedNativeImage.Create(options.InitImage);
+        using var endImage = PinnedNativeImage.Create(options.EndImage);
+        using var controlFrames = NativeSdImageArray.Create(options.ControlFrames);
+        using var loras = NativeSdLoraArray.Create(options.Loras, strings);
+
+        var native = new NativeMethods.NativeSdVidGenParams();
+        NativeMethods.sd_vid_gen_params_init(ref native);
+
+        native.prompt = strings.Add(options.Prompt);
+        native.negative_prompt = strings.Add(options.NegativePrompt);
+        native.clip_skip = options.ClipSkip ?? native.clip_skip;
+        native.width = ResolveDimension(options.Width, initImage?.Width, endImage?.Width, controlFrames?.FirstWidth);
+        native.height = ResolveDimension(options.Height, initImage?.Height, endImage?.Height, controlFrames?.FirstHeight);
+        native.strength = options.Strength;
+        native.seed = options.Seed;
+        native.video_frames = options.VideoFrames > 0 ? options.VideoFrames : native.video_frames;
+        native.fps = options.Fps > 0 ? options.Fps : native.fps;
+        native.moe_boundary = options.MoeBoundary;
+        native.vace_strength = options.VaceStrength;
+        native.init_image = initImage?.Native ?? default;
+        native.end_image = endImage?.Native ?? default;
+        native.control_frames = controlFrames?.Pointer ?? IntPtr.Zero;
+        native.control_frames_size = controlFrames?.Count ?? 0;
+
+        if (loras is not null)
+        {
+            native.loras = loras.Pointer;
+            native.lora_count = (uint)loras.Count;
+        }
+
+        var sampleMethod = options.SampleMethod ??
+                           (StableDiffusionSampleMethod)NativeMethods.sd_get_default_sample_method(_handle);
+        var scheduler = options.Scheduler ??
+                        (StableDiffusionScheduler)NativeMethods.sd_get_default_scheduler(_handle, (int)sampleMethod);
+
+        native.sample_params.sample_method = (int)sampleMethod;
+        native.sample_params.scheduler = (int)scheduler;
+        native.sample_params.sample_steps = options.SampleSteps;
+        native.sample_params.eta = options.Eta;
+        if (options.FlowShift is not null)
+        {
+            native.sample_params.flow_shift = options.FlowShift.Value;
+        }
+        native.sample_params.guidance.txt_cfg = options.GuidanceScale;
+        native.sample_params.guidance.img_cfg = options.ImageGuidanceScale;
+        native.sample_params.guidance.distilled_guidance = options.DistilledGuidanceScale;
+        native.sample_params.extra_sample_args = strings.Add(options.ExtraSampleArguments);
+
+        bool hasHighNoiseOverrides = options.HighNoiseSampleSteps is not null ||
+                                     options.HighNoiseGuidanceScale is not null ||
+                                     options.HighNoiseImageGuidanceScale is not null ||
+                                     options.HighNoiseDistilledGuidanceScale is not null ||
+                                     options.HighNoiseEta is not null ||
+                                     options.HighNoiseFlowShift is not null ||
+                                     options.HighNoiseSampleMethod is not null ||
+                                     options.HighNoiseScheduler is not null ||
+                                     !string.IsNullOrWhiteSpace(options.HighNoiseExtraSampleArguments);
+
+        if (hasHighNoiseOverrides)
+        {
+            var highNoiseMethod = options.HighNoiseSampleMethod ?? sampleMethod;
+            var highNoiseScheduler = options.HighNoiseScheduler ??
+                                     (StableDiffusionScheduler)NativeMethods.sd_get_default_scheduler(_handle, (int)highNoiseMethod);
+
+            native.high_noise_sample_params.sample_method = (int)highNoiseMethod;
+            native.high_noise_sample_params.scheduler = (int)highNoiseScheduler;
+            native.high_noise_sample_params.sample_steps = options.HighNoiseSampleSteps ?? native.high_noise_sample_params.sample_steps;
+            native.high_noise_sample_params.eta = options.HighNoiseEta ?? native.high_noise_sample_params.eta;
+            if (options.HighNoiseFlowShift is not null)
+            {
+                native.high_noise_sample_params.flow_shift = options.HighNoiseFlowShift.Value;
+            }
+            native.high_noise_sample_params.guidance.txt_cfg = options.HighNoiseGuidanceScale ?? options.GuidanceScale;
+            native.high_noise_sample_params.guidance.img_cfg = options.HighNoiseImageGuidanceScale ?? options.ImageGuidanceScale;
+            native.high_noise_sample_params.guidance.distilled_guidance = options.HighNoiseDistilledGuidanceScale ?? options.DistilledGuidanceScale;
+            native.high_noise_sample_params.extra_sample_args = strings.Add(options.HighNoiseExtraSampleArguments);
+        }
+
+        IntPtr framesPtr = IntPtr.Zero;
+        IntPtr audioPtr = IntPtr.Zero;
+        int frameCount = 0;
+        bool succeeded = NativeMethods.generate_video(_handle, ref native, out framesPtr, out frameCount, out audioPtr);
+        if (!succeeded)
+        {
+            throw new InvalidOperationException("Native video generation failed.");
+        }
+
+        try
+        {
+            return new StableDiffusionVideoResult(NativeMethods.CopyImages(framesPtr, frameCount), native.fps);
+        }
+        finally
+        {
+            if (framesPtr != IntPtr.Zero)
+            {
+                NativeMethods.free_sd_images(framesPtr, frameCount);
+            }
+
+            if (audioPtr != IntPtr.Zero)
+            {
+                NativeMethods.free_sd_audio(audioPtr);
+            }
         }
     }
 
@@ -192,20 +313,33 @@ public sealed class StableDiffusionContext : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
-    private static int ResolveDimension(int configuredValue, int? fallback)
+    private static int ResolveDimension(int configuredValue, params int?[] fallbacks)
     {
         if (configuredValue > 0)
         {
             return configuredValue;
         }
 
-        if (fallback is > 0)
+        foreach (var fallback in fallbacks)
         {
-            return fallback.Value;
+            if (fallback is > 0)
+            {
+                return fallback.Value;
+            }
         }
 
         throw new ArgumentOutOfRangeException(
             nameof(configuredValue),
             "Width and Height must be positive, or an init image must provide them.");
+    }
+
+    private static string? ResolveParamsBackend(StableDiffusionContextOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.ParamsBackend))
+        {
+            return options.ParamsBackend;
+        }
+
+        return options.OffloadToCpu ? "cpu" : null;
     }
 }

@@ -6,7 +6,7 @@
 	  <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
 	  <LangVersion>preview</LangVersion>
 	  <AssemblyName>SeasonImage</AssemblyName>
-	  <RootNamespace>SeasonImage</RootNamespace>
+	  <RootNamespace>Season.Image</RootNamespace>
 	  <PackageId>SeasonImage</PackageId>
 	  <Title>SeasonImage</Title>
 	  <Authors>SeasonRealms</Authors>
@@ -17,7 +17,7 @@
 	  <RepositoryUrl>https://github.com/SeasonRealms/SeasonImage</RepositoryUrl>
 	  <RepositoryType>git</RepositoryType>
 	  <PublishRepositoryUrl>true</PublishRepositoryUrl>
-	  <Version>0.1.0</Version>
+	  <Version>0.2.0</Version>
 	  <PackageReadmeFile>README.md</PackageReadmeFile>
 	  <PackageLicenseExpression>MIT</PackageLicenseExpression>
 	  <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
@@ -49,6 +49,8 @@
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
 		<None Include="runtimes\win-x64\native\*" Pack="true" PackagePath="runtimes/win-x64/native/" Condition="Exists('runtimes\win-x64\native')" />
+
+		<ProjectReference Include="..\SeasonGGML\SeasonGGML.csproj" />
 	</ItemGroup>
 
 	<!-- Windows: copy DLLs directly to output root (next to the .exe/.dll) -->
@@ -59,5 +61,5 @@
 			<Pack>false</Pack>
 		</Content>
 	</ItemGroup>
-
+	
 </Project>

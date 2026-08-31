@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 // https://github.com/SeasonRealms/SeasonImage
 
-namespace SeasonImage;
+namespace Season.Image;
 
 public static class StableDiffusion
 {

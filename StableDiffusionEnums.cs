@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 // https://github.com/SeasonRealms/SeasonImage
 
-namespace SeasonImage;
+namespace Season.Image;
 
 public enum StableDiffusionLogLevel
 {
@@ -124,5 +124,6 @@ public enum StableDiffusionWeightType
     TQ2_0 = 35,
     MXFP4 = 39,
     NVFP4 = 40,
-    Q1_0 = 41
+    Q1_0 = 41,
+    Auto = 42
 }

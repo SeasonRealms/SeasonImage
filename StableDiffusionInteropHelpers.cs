@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 // https://github.com/SeasonRealms/SeasonImage
 
-namespace SeasonImage;
+namespace Season.Image;
 
 internal sealed class Utf8StringArena : IDisposable
 {
@@ -131,6 +131,78 @@ internal sealed class NativeSdLoraArray : IDisposable
         if (_handle.IsAllocated)
         {
             _handle.Free();
+        }
+    }
+}
+
+internal sealed class NativeSdImageArray : IDisposable
+{
+    private readonly PinnedNativeImage[] _pinnedImages;
+    private readonly NativeMethods.NativeSdImage[] _nativeImages;
+    private GCHandle _handle;
+    private bool _disposed;
+
+    private NativeSdImageArray(PinnedNativeImage[] pinnedImages, NativeMethods.NativeSdImage[] nativeImages)
+    {
+        _pinnedImages = pinnedImages;
+        _nativeImages = nativeImages;
+        _handle = GCHandle.Alloc(_nativeImages, GCHandleType.Pinned);
+    }
+
+    public int Count => _nativeImages.Length;
+    public IntPtr Pointer => _handle.AddrOfPinnedObject();
+    public int? FirstWidth => _pinnedImages.Length > 0 ? _pinnedImages[0].Width : null;
+    public int? FirstHeight => _pinnedImages.Length > 0 ? _pinnedImages[0].Height : null;
+
+    public static NativeSdImageArray? Create(IReadOnlyList<StableDiffusionInputImage>? images)
+    {
+        if (images is null || images.Count == 0)
+        {
+            return null;
+        }
+
+        var pinnedImages = new PinnedNativeImage[images.Count];
+        var nativeImages = new NativeMethods.NativeSdImage[images.Count];
+
+        try
+        {
+            for (var i = 0; i < images.Count; i++)
+            {
+                var image = images[i] ?? throw new ArgumentException("Image items cannot contain null values.", nameof(images));
+                pinnedImages[i] = new PinnedNativeImage(image);
+                nativeImages[i] = pinnedImages[i].Native;
+            }
+
+            return new NativeSdImageArray(pinnedImages, nativeImages);
+        }
+        catch
+        {
+            foreach (var pinned in pinnedImages)
+            {
+                pinned?.Dispose();
+            }
+
+            throw;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        if (_handle.IsAllocated)
+        {
+            _handle.Free();
+        }
+
+        foreach (var pinned in _pinnedImages)
+        {
+            pinned.Dispose();
         }
     }
 }
