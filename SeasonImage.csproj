@@ -49,6 +49,7 @@
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
 		<None Include="runtimes\win-x64\native\*" Pack="true" PackagePath="runtimes/win-x64/native/" Condition="Exists('runtimes\win-x64\native')" />
+		<None Include="runtimes\maccatalyst-arm64\native\*" Pack="true" PackagePath="runtimes/maccatalyst-arm64/native/" Condition="Exists('runtimes\maccatalyst-arm64\native')" />
 
 		<ProjectReference Include="..\SeasonGGML\SeasonGGML.csproj" />
 	</ItemGroup>
@@ -56,6 +57,26 @@
 	<!-- Windows: copy DLLs directly to output root (next to the .exe/.dll) -->
 	<ItemGroup Condition="'$(IsWindows)' == 'true'">
 		<Content Include="runtimes\win-x64\native\*" Condition="Exists('runtimes\win-x64\native')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<Link>%(Filename)%(Extension)</Link>
+			<Pack>false</Pack>
+		</Content>
+	</ItemGroup>
+
+	<!--
+	  Mac Catalyst: libstable-diffusion.dylib is the stable-diffusion.cpp runtime
+	  (ggml is statically linked in; otool -L shows no libggml dependency).
+	  NativeMethods P/Invokes "stable-diffusion", so the dylib must ship in the app
+	  bundle; the Apple SDK classifies it as a dynamic library and places it under
+	  Contents/MonoBundle where the runtime resolves it, rewriting its install name
+	  to @executable_path/../../Contents/MonoBundle/libstable-diffusion.dylib.
+	  Only the dylib is Content: the folder also holds stable-diffusion.h,
+	  stable-diffusion.cpp.txt, ggml.txt and README.txt, which have no place in an
+	  app bundle (and the Apple SDK warns it cannot compute a PublishFolderType
+	  for them).
+	-->
+	<ItemGroup Condition="'$(IsMacCatalyst)' == 'true'">
+		<Content Include="runtimes\maccatalyst-arm64\native\libstable-diffusion.dylib" Condition="Exists('runtimes\maccatalyst-arm64\native\libstable-diffusion.dylib')">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<Link>%(Filename)%(Extension)</Link>
 			<Pack>false</Pack>
