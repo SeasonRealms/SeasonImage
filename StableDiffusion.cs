@@ -43,17 +43,7 @@ public static class StableDiffusion
             return;
         }
 
-        s_logThunk = static (level, text, _) =>
-        {
-            var managed = s_logCallback;
-            if (managed is null)
-            {
-                return;
-            }
-
-            managed((StableDiffusionLogLevel)level, NativeMethods.PtrToString(text));
-        };
-
+        s_logThunk = LogThunk;
         NativeMethods.sd_set_log_callback(s_logThunk, IntPtr.Zero);
     }
 
@@ -69,17 +59,7 @@ public static class StableDiffusion
             return;
         }
 
-        s_progressThunk = static (step, steps, time, _) =>
-        {
-            var managed = s_progressCallback;
-            if (managed is null)
-            {
-                return;
-            }
-
-            managed(new StableDiffusionProgress(step, steps, time));
-        };
-
+        s_progressThunk = ProgressThunk;
         NativeMethods.sd_set_progress_callback(s_progressThunk, IntPtr.Zero);
     }
 
@@ -105,17 +85,7 @@ public static class StableDiffusion
 
         options ??= new StableDiffusionPreviewCallbackOptions();
 
-        s_previewThunk = static (step, frameCount, frames, isNoisy, _) =>
-        {
-            var managed = s_previewCallback;
-            if (managed is null)
-            {
-                return;
-            }
-
-            var copiedFrames = NativeMethods.CopyImages(frames, frameCount);
-            managed(new StableDiffusionPreview(step, isNoisy, copiedFrames));
-        };
+        s_previewThunk = PreviewThunk;
 
         NativeMethods.sd_set_preview_callback(
             s_previewThunk,
@@ -124,6 +94,53 @@ public static class StableDiffusion
             NativeMethods.ToNativeBool(options.IncludeDenoised),
             NativeMethods.ToNativeBool(options.IncludeNoisy),
             IntPtr.Zero);
+    }
+
+    // Static thunks with MonoPInvokeCallback: the AOT compiler pre-generates the
+    // native-to-managed wrappers. Lambdas would need those wrappers JIT-compiled on
+    // first use, which aborts aot-only Release builds with
+    // "Attempting to JIT compile method '(wrapper native-to-managed) ...'".
+#if IOS || MACCATALYST
+    [ObjCRuntime.MonoPInvokeCallback(typeof(NativeMethods.NativeLogCallback))]
+#endif
+    private static void LogThunk(int level, IntPtr text, IntPtr data)
+    {
+        var managed = s_logCallback;
+        if (managed is null)
+        {
+            return;
+        }
+
+        managed((StableDiffusionLogLevel)level, NativeMethods.PtrToString(text));
+    }
+
+#if IOS || MACCATALYST
+    [ObjCRuntime.MonoPInvokeCallback(typeof(NativeMethods.NativeProgressCallback))]
+#endif
+    private static void ProgressThunk(int step, int steps, float time, IntPtr data)
+    {
+        var managed = s_progressCallback;
+        if (managed is null)
+        {
+            return;
+        }
+
+        managed(new StableDiffusionProgress(step, steps, time));
+    }
+
+#if IOS || MACCATALYST
+    [ObjCRuntime.MonoPInvokeCallback(typeof(NativeMethods.NativePreviewCallback))]
+#endif
+    private static void PreviewThunk(int step, int frameCount, IntPtr frames, bool isNoisy, IntPtr data)
+    {
+        var managed = s_previewCallback;
+        if (managed is null)
+        {
+            return;
+        }
+
+        var copiedFrames = NativeMethods.CopyImages(frames, frameCount);
+        managed(new StableDiffusionPreview(step, isNoisy, copiedFrames));
     }
 
     public static StableDiffusionContext CreateContext(StableDiffusionContextOptions options)

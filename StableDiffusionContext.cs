@@ -64,6 +64,7 @@ public sealed class StableDiffusionContext : IDisposable
         native.enable_mmap = NativeMethods.ToNativeBool(options.EnableMmap);
         native.flash_attn = NativeMethods.ToNativeBool(options.FlashAttention);
         native.diffusion_flash_attn = NativeMethods.ToNativeBool(options.DiffusionFlashAttention);
+        native.diffusion_conv_direct = NativeMethods.ToNativeBool(options.DiffusionConvDirect);
         native.tae_preview_only = NativeMethods.ToNativeBool(options.TaePreviewOnly);
         native.stream_layers = NativeMethods.ToNativeBool(options.StreamLayers);
 
