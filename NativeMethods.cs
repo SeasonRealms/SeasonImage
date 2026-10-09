@@ -6,7 +6,14 @@ namespace Season.Image;
 
 internal static class NativeMethods
 {
+#if IOS
+    // iOS ships a single statically-linked runtime (libstable-diffusion.a merges the
+    // stable-diffusion and ggml entry points), so the P/Invoke binds against the
+    // executable itself via "__Internal" - there is no dylib to load at runtime.
+    private const string LibraryName = "__Internal";
+#else
     private const string LibraryName = "stable-diffusion";
+#endif
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativeSdCtxParams

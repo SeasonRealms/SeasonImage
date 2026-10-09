@@ -17,6 +17,9 @@ public static class StableDiffusion
 
     public static bool IsSupported =>
         OperatingSystem.IsWindows() ||
+        // IsIOS() can report true on Mac Catalyst, so the guard keeps the arm64-only
+        // Mac Catalyst clause below in charge there.
+        (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst()) ||
         (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
 
     public static string Version => NativeMethods.PtrToString(NativeMethods.sd_version());
@@ -177,10 +180,10 @@ public static class StableDiffusion
 
     internal static void EnsureSupported()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst())
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS())
         {
             throw new PlatformNotSupportedException(
-                "SeasonImage currently ships stable-diffusion native binaries only for Windows and Mac Catalyst (Apple Silicon).");
+                "SeasonImage currently ships stable-diffusion native binaries only for Windows, Mac Catalyst (Apple Silicon) and iOS.");
         }
 
         // The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
