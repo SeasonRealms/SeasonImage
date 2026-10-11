@@ -15,12 +15,12 @@ public static class StableDiffusion
     private static NativeMethods.NativePreviewCallback? s_previewThunk;
     private static Action<StableDiffusionPreview>? s_previewCallback;
 
-    public static bool IsSupported =>
-        OperatingSystem.IsWindows() ||
-        // IsIOS() can report true on Mac Catalyst, so the guard keeps the arm64-only
-        // Mac Catalyst clause below in charge there.
-        (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst()) ||
-        (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
+    //public static bool IsSupported =>
+    //    OperatingSystem.IsWindows() ||
+    //    // IsIOS() can report true on Mac Catalyst, so the guard keeps the arm64-only
+    //    // Mac Catalyst clause below in charge there.
+    //    (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst()) ||
+    //    (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
 
     public static string Version => NativeMethods.PtrToString(NativeMethods.sd_version());
 
@@ -180,20 +180,20 @@ public static class StableDiffusion
 
     internal static void EnsureSupported()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS() && !OperatingSystem.IsLinux())
-        {
-            throw new PlatformNotSupportedException(
-                "SeasonImage currently ships stable-diffusion native binaries only for Windows, Mac Catalyst (Apple Silicon), iOS, and Linux.");
-        }
+        //if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS() && !OperatingSystem.IsLinux())
+        //{
+        //    throw new PlatformNotSupportedException(
+        //        "SeasonImage currently ships stable-diffusion native binaries only for Windows, Mac Catalyst (Apple Silicon), iOS, and Linux.");
+        //}
 
-        // The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
-        // Rosetta - the dylib cannot even be opened. Report that reason instead of
-        // letting the first P/Invoke surface a bare DllNotFoundException.
-        if (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
-        {
-            throw new PlatformNotSupportedException(
-                "SeasonImage ships Mac Catalyst stable-diffusion native binaries for Apple Silicon (arm64) only; " +
-                $"this process runs as {RuntimeInformation.ProcessArchitecture}.");
-        }
+        //// The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
+        //// Rosetta - the dylib cannot even be opened. Report that reason instead of
+        //// letting the first P/Invoke surface a bare DllNotFoundException.
+        //if (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+        //{
+        //    throw new PlatformNotSupportedException(
+        //        "SeasonImage ships Mac Catalyst stable-diffusion native binaries for Apple Silicon (arm64) only; " +
+        //        $"this process runs as {RuntimeInformation.ProcessArchitecture}.");
+        //}
     }
 }
