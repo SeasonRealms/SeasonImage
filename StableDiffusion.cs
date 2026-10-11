@@ -180,10 +180,10 @@ public static class StableDiffusion
 
     internal static void EnsureSupported()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS())
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS() && !OperatingSystem.IsLinux())
         {
             throw new PlatformNotSupportedException(
-                "SeasonImage currently ships stable-diffusion native binaries only for Windows, Mac Catalyst (Apple Silicon) and iOS.");
+                "SeasonImage currently ships stable-diffusion native binaries only for Windows, Mac Catalyst (Apple Silicon), iOS, and Linux.");
         }
 
         // The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
