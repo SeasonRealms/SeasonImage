@@ -20,6 +20,9 @@ namespace Season.Image;
 /// which then satisfies the NEEDED entries. Windows resolves through the DLL search
 /// path (the MSBuild Content items copy the .dll files to the output root) and iOS
 /// links everything statically into "__Internal", so only Linux needs this.
+/// Android needs nothing here either: the .so ships in the APK's jniLibs and the
+/// platform linker searches the app's native library directory for the requested
+/// library and its DT_NEEDED entries alike, so default probing resolves the chain.
 /// </summary>
 internal static class NativeLibraryResolver
 {
