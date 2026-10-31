@@ -18,13 +18,15 @@ on:
       ggml_ref:
         description: "SeasonRealms/ggml tag / branch / commit (must resolve to the ref the other packages build)"
         required: true
-        # The product ships ONE ggml: every package - SeasonGGML, llama.cpp,
-        # qwentts and SeasonThreeD - compiles SeasonRealms/ggml's master and ships the
-        # ggml*.dll it produced, so whichever package a module is taken from, it is the
-        # same module. master carries the fastdiv fix and the GGML_PREC_F32
-        # FlashAttention patches the whole product relies on, and a ref skew here is a
-        # silent behaviour difference at run time. Deliberately not a tag: the commit
-        # this run resolved is recorded in the artifact manifest.
+        # The product ships ONE ggml runtime and ONE download source for it: the
+        # SeasonGGML build-ggml.yml artifacts. This workflow compiles SeasonRealms/ggml
+        # only because libstable-diffusion links against it - the ggml DLLs this build
+        # produces stay on the runner and are NOT packaged (see "Collect artifacts"), so
+        # ggml_ref has to resolve to the ref SeasonGGML's ggml-* artifacts were built
+        # from. master carries the fastdiv fix and the GGML_PREC_F32 FlashAttention
+        # patches the whole product relies on, and a ref skew here is a silent behaviour
+        # difference at run time. Deliberately not a tag: the commit this run resolved
+        # is recorded in the artifact manifest.
         default: "master"
       cuda_version:
         description: "CUDA Toolkit version for the Windows and Linux builds, aligned with SeasonTTS"
@@ -194,9 +196,9 @@ jobs:
           # CMakeLists adds -DGGML_MAX_NAME=160 for every target under it and
           # src/core/ggml_extend.h static_asserts GGML_MAX_NAME >= 160, because the
           # tensor names it builds ("double_blocks.*") do not fit 128. The fleet moved
-          # to 160 with this change so the ggml_tensor layout stays identical across
-          # SeasonGGML, llama.cpp, qwentts, trellis and this build - all of them stage a
-          # same-named ggml runtime into one app.
+          # to 160 with this change because every package binds to the one ggml runtime
+          # SeasonGGML ships, so the ggml_tensor layout has to be identical across
+          # SeasonGGML, llama.cpp, qwentts, trellis and this build.
           $cmakeArgs = @(
             '..',
             '-G', 'Ninja',
@@ -250,9 +252,6 @@ jobs:
 
           Copy-Item include/stable-diffusion.h -Destination $out
           Copy-Item LICENSE -Destination (Join-Path $out "stable-diffusion.cpp.txt")
-          if (Test-Path "ggml/LICENSE") {
-            Copy-Item "ggml/LICENSE" -Destination (Join-Path $out "ggml.txt")
-          }
 
           $stableDiffusionDll = Get-ChildItem build -Recurse -File -Filter "stable-diffusion.dll" | Select-Object -First 1
           if (-not $stableDiffusionDll) {
@@ -265,9 +264,15 @@ jobs:
             Copy-Item $stableDiffusionLib.FullName -Destination $out -Force
           }
 
-          Get-ChildItem build -Recurse -File -Filter "ggml*.dll" | ForEach-Object {
-            Copy-Item $_.FullName -Destination $out -Force
-          }
+          # The ggml runtime this build linked against is deliberately NOT packaged.
+          # build-ggml.yml (SeasonGGML) is the single download source for it: every AI
+          # package binds to that one ggml*, and copying the same ggml.dll /
+          # ggml-cpu-*.dll / ggml-cuda.dll / ggml-vulkan.dll into this artifact again was
+          # only the same files a second time. Assert instead that the build really
+          # produced the runtime this .dll imports - a configure change that stops
+          # emitting one of them has to fail here, not on a user's machine - and leave
+          # it on the runner.
+          $ggmlRuntime = @(Get-ChildItem build -Recurse -File -Filter "ggml*.dll")
 
           $requiredGgmlDlls = @(
             "ggml.dll",
@@ -277,15 +282,17 @@ jobs:
           )
 
           foreach ($name in $requiredGgmlDlls) {
-            if (-not (Test-Path (Join-Path $out $name))) {
-              throw "Required GGML runtime is missing: $name"
+            if (-not ($ggmlRuntime | Where-Object { $_.Name -eq $name })) {
+              throw "Required GGML runtime was not produced: $name"
             }
           }
 
-          $cpuBackends = Get-ChildItem $out -File | Where-Object { $_.Name -like 'ggml-cpu*.dll' } | Sort-Object Name
+          $cpuBackends = @($ggmlRuntime | Where-Object { $_.Name -like 'ggml-cpu*.dll' } | Sort-Object Name)
           if ($cpuBackends.Count -eq 0) {
             throw "No CPU GGML backend variants were produced."
           }
+
+          Write-Host ("ggml runtime not packaged (build-ggml.yml provides it): {0}" -f (($ggmlRuntime | ForEach-Object { $_.Name } | Sort-Object -Unique) -join ', '))
 
           if (-not $env:CUDA_PATH) {
             throw "CUDA_PATH is not set after installing CUDA Toolkit."
@@ -447,10 +454,11 @@ jobs:
             "CUDA runtime: not packaged - cudart / cublas / cublasLt come from cudacudnn-runtime",
             "CUDA Toolkit version: ${{ github.event.inputs.cuda_version }}",
             "",
-            "This build enables GGML_CPU_ALL_VARIANTS, CUDA and Vulkan in one stable-diffusion.dll, while keeping ggml runtime DLLs separate for sharing with other native libraries.",
+            "This build enables GGML_CPU_ALL_VARIANTS, CUDA and Vulkan in one stable-diffusion.dll and links the ggml runtime dynamically (SD_BUILD_SHARED_GGML_LIB=ON).",
+            "ggml runtime: NOT PACKAGED - build-ggml.yml (SeasonGGML, artifact ggml-win-x64-multi-backend-*) is the single download source for ggml.dll / ggml-base.dll / ggml-cpu-*.dll / ggml-cuda.dll / ggml-vulkan.dll (same ggml_ref, GGML_MAX_NAME=160). Stage that artifact next to this one; stable-diffusion.dll resolves it by name.",
             "CPU uses GGML_CPU_ALL_VARIANTS with GGML_BACKEND_DL so one runtime can expose multiple x86 CPU variants and let ggml choose the best supported backend at runtime.",
             "",
-            "CPU backend DLLs:"
+            "CPU backend DLLs this .dll was linked against (shipped by the SeasonGGML artifact):"
           ) | Set-Content -Path $manifest -Encoding ascii
 
           $cpuBackends | ForEach-Object {
@@ -613,32 +621,36 @@ jobs:
 
           cp include/stable-diffusion.h "$out"
           cp LICENSE "$out/stable-diffusion.cpp.txt"
-          if [ -f ggml/LICENSE ]; then
-            cp ggml/LICENSE "$out/ggml.txt"
-          fi
 
           # Dereference the SONAME symlink chains so the artifact carries real
           # files under every name that dlopen and the linker-recorded SONAMEs
-          # look for at runtime.
-          find build \( -name 'libstable-diffusion.so*' -o -name 'libggml*.so*' \) -exec cp -Lf {} "$out/" \;
+          # look for at runtime. Only libstable-diffusion travels: the ggml
+          # runtime is not packaged here (see the assertion below).
+          find build -name 'libstable-diffusion.so*' -exec cp -Lf {} "$out/" \;
 
           if [ ! -f "$out/libstable-diffusion.so" ]; then
             echo "libstable-diffusion.so not found" >&2
             exit 1
           fi
 
+          # The ggml runtime this build linked against stays on the runner: the
+          # SeasonGGML build-ggml.yml artifact is the single download source for it, and
+          # a second copy in this artifact was only the same files again. Assert that
+          # the build really produced what libstable-diffusion.so imports instead.
           for name in libggml.so libggml-base.so libggml-cuda.so libggml-vulkan.so; do
-            if [ ! -f "$out/$name" ]; then
-              echo "Required GGML runtime is missing: $name" >&2
+            if ! find build -name "$name" | grep -q .; then
+              echo "Required GGML runtime was not produced: $name" >&2
               exit 1
             fi
           done
 
-          cpu_backends=$(find "$out" -maxdepth 1 -type f -name 'libggml-cpu*.so' | sort)
+          cpu_backends=$(find build -type f -name 'libggml-cpu*.so' -printf '%f\n' | sort -u)
           if [ -z "$cpu_backends" ]; then
             echo "No CPU GGML backend variants were produced." >&2
             exit 1
           fi
+          echo "ggml runtime not packaged (build-ggml.yml provides it):"
+          echo "$cpu_backends"
 
           {
             echo "SDCPP_REPO: ${{ env.SDCPP_REPO }}"
@@ -651,12 +663,13 @@ jobs:
             echo "GGML backend extensions: upstream mode (SD_USE_UPSTREAM_GGML=ON) - no INT8 convrot / SageAttention kernels"
             echo "CUDA Toolkit version (build time only): ${{ github.event.inputs.cuda_version }}"
             echo ""
-            echo "This build enables GGML_CPU_ALL_VARIANTS, CUDA and Vulkan in one libstable-diffusion.so, while keeping ggml runtime libraries separate for sharing with other native libraries."
+            echo "This build enables GGML_CPU_ALL_VARIANTS, CUDA and Vulkan in one libstable-diffusion.so and links the ggml runtime dynamically (SD_BUILD_SHARED_GGML_LIB=ON)."
+            echo "ggml runtime: NOT PACKAGED - build-ggml.yml (SeasonGGML, artifact ggml-linux-x64-multi-backend-*) is the single download source for libggml.so / libggml-base.so / libggml-cpu*.so / libggml-cuda.so / libggml-vulkan.so (same ggml_ref, GGML_MAX_NAME=160). Stage that artifact next to this one; libstable-diffusion.so resolves it by SONAME."
             echo "CPU uses GGML_CPU_ALL_VARIANTS with GGML_BACKEND_DL so one runtime can expose multiple x86 CPU variants and let ggml choose the best supported backend at runtime."
             echo ""
             echo "CUDA and cuDNN runtimes are NOT bundled: install CUDA 12.x system-wide for the CUDA backend."
             echo ""
-            echo "CPU backend libraries:"
+            echo "CPU backend libraries this .so was linked against (shipped by the SeasonGGML artifact):"
             echo "$cpu_backends"
             echo ""
             echo "Artifact contents:"
@@ -919,6 +932,7 @@ jobs:
             echo "This build packages a single self-contained stable-diffusion.cpp runtime for ${RID}."
             echo "Apple Silicon only: no x86_64 slice is produced, so this runtime does not load on Intel Macs. Add a maccatalyst-x64 build if Intel support is needed again."
             echo "Static linkage: stable-diffusion, ggml and every backend are archived into libstable-diffusion.dylib and registered at runtime by ggml's backend registry; nothing is dlopen'd, so the app bundle contains a single Mach-O to sign."
+            echo "ggml: compiled INTO libstable-diffusion.dylib, so this artifact ships no separate libggml file - unlike win-x64 / linux-x64 / android-arm64 there is nothing here to hand over to the SeasonGGML artifact, and ggml.txt stays because ggml's code is redistributed inside this Mach-O. The libggml.dylib the app bundle also carries is SeasonGGML's own artifact (GGML.cs maps both P/Invoke names to it) and is not shared with this one."
             echo "CPU targets the M1 baseline (armv8.2-a+dotprod). GGML_CPU_ALL_VARIANTS is intentionally NOT used because it requires GGML_BACKEND_DL; M1 and every later Apple Silicon chip run this baseline."
             echo "Metal uses GGML_METAL_EMBED_LIBRARY so the shader source travels inside libstable-diffusion.dylib; no default.metallib has to be deployed or located in the app bundle."
             echo "Metal targets the Apple Silicon unified-memory GPU only; Intel integrated and AMD discrete GPUs are out of scope for this artifact."
@@ -1247,6 +1261,7 @@ jobs:
             echo "On iOS the stable-diffusion P/Invokes are meant to bind as __Internal (unlike the libstable-diffusion dylib used on Mac Catalyst), so the app statically links libstable-diffusion.a via NativeReference (Kind=Static)."
             echo "Static linkage: stable-diffusion, ggml and every backend are archived into the single libstable-diffusion.a and registered at runtime by ggml's backend registry; nothing is dlopen'd."
             echo "Self-contained: a complete ggml build is merged in. If several self-contained ggml-based archives (ggml, llama, qwentts, stable-diffusion, ...) are linked into the same app, keep exactly one ForceLoad=True owner; otherwise the duplicate ggml objects clash at link time."
+            echo "ggml: merged INTO libstable-diffusion.a, so this artifact ships no separate libggml.a - unlike win-x64 / linux-x64 / android-arm64 there is nothing here to hand over to the SeasonGGML libggml.xcframework, and ggml.txt stays because ggml's code is redistributed inside this archive."
             echo "This build compiles ggml with GGML_MAX_NAME=160 (the upstream default is 64) so the ggml_tensor layout matches the other ggml-based runtimes linked into the same app (llama.cpp, qwentts and SeasonGGML, which all use 160)."
             echo "CPU targets the M1 baseline (armv8.2-a+dotprod), supported by every A12+ device and every Apple Silicon simulator."
             echo "Metal uses GGML_METAL_EMBED_LIBRARY so the shader source travels inside libstable-diffusion.a; no default.metallib has to be deployed or located in the app bundle."
@@ -1388,24 +1403,32 @@ jobs:
 
           cp include/stable-diffusion.h "$out"
           cp LICENSE "$out/stable-diffusion.cpp.txt"
-          if [ -f ggml/LICENSE ]; then
-            cp ggml/LICENSE "$out/ggml.txt"
-          fi
 
           # The NDK toolchain has no versioned SONAMEs (CMake's VERSION/
           # SOVERSION turn into plain lib<name>.so files - exactly the names
           # the Android linker resolves inside the APK), so the -L glob copy
           # only defends against toolchain changes that would reintroduce the
-          # Linux-style symlink chain.
+          # Linux-style symlink chain. Only libstable-diffusion ships: the ggml
+          # runtime is not packaged here (see the assertion below).
           find build-android -name 'libstable-diffusion.so*' -exec cp -Lf {} "$out/" \;
-          find build-android -name 'libggml*.so*' -exec cp -Lf {} "$out/" \;
 
-          for name in libstable-diffusion.so libggml.so libggml-base.so libggml-cpu.so; do
-            if [ ! -f "$out/$name" ]; then
-              echo "Required stable-diffusion runtime is missing: $name" >&2
+          if [ ! -f "$out/libstable-diffusion.so" ]; then
+            echo "Required stable-diffusion runtime is missing: libstable-diffusion.so" >&2
+            exit 1
+          fi
+
+          # The ggml runtime this build linked against stays on the runner: the
+          # SeasonGGML build-ggml.yml artifact is the single download source for it,
+          # and a second copy inside the APK was only the same files again. Assert
+          # that the build really produced what libstable-diffusion.so needs.
+          for name in libggml.so libggml-base.so libggml-cpu.so; do
+            if ! find build-android -name "$name" | grep -q .; then
+              echo "Required GGML runtime was not produced: $name" >&2
               exit 1
             fi
           done
+          echo "ggml runtime not packaged (build-ggml.yml provides it):"
+          find build-android -name 'libggml*.so' -printf '  %f\n' | sort -u
 
           {
             echo "Platform: ${RID} (ABI: ${ABI}; deployed under jniLibs/lib/${ABI})"
@@ -1423,14 +1446,14 @@ jobs:
             echo "This build packages stable-diffusion.cpp for Android arm64-v8a only."
             echo "Only 64-bit real devices are in scope: no armeabi-v7a / x86 / x86_64 slices are produced, so Android emulators are excluded."
             echo "WebP and WebM image/video codecs are disabled for this artifact (SD_WEBP=OFF, SD_WEBM=OFF)."
-            echo "SD_BUILD_SHARED_GGML_LIB=ON keeps the ggml runtime libraries separate so they can be shared with the other ggml-based runtimes inside the same app."
+            echo "SD_BUILD_SHARED_GGML_LIB=ON keeps the ggml runtime a separate set of shared libraries - supplied by the SeasonGGML artifact, not by this one (see below)."
             echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=160 so the ggml_tensor layout matches the other ggml-based runtimes linked into the same app (llama.cpp, qwentts and SeasonGGML, which all use 160)."
             echo "GGML_BACKEND_DL=OFF: libggml-cpu.so is a plain shared library linked into libggml.so via DT_NEEDED, so the backend registry self-registers at load time (same runtime model as iOS) and nothing has to be scanned or dlopen'd by the app."
             echo "CPU targets the armv8.2-a+dotprod baseline (Cortex-A75 class and newer), the same CPU floor the iOS build uses (M1 baseline)."
             echo "CUDA, Vulkan and OpenMP do not exist on the Android target and are explicitly disabled."
             echo "The NDK links 16 KB page-size aligned libraries by default; every shipped .so is re-checked below (Play requirement)."
             echo ""
-            echo "The ggml core libraries (libggml.so, libggml-base.so, libggml-cpu.so) are also produced by the SeasonGGML / llama.cpp / qwentts Android builds from the same ggml ref; ship exactly ONE copy of them inside the APK and let libllama.so / libstable-diffusion.so / libqwen.so resolve it via DT_NEEDED."
+            echo "ggml runtime: NOT PACKAGED - build-ggml.yml (SeasonGGML, artifact ggml-android-arm64-multi-backend-*) is the single download source for libggml.so / libggml-base.so / libggml-cpu.so (same ggml_ref, GGML_MAX_NAME=160). Ship that one inside jniLibs/lib/${ABI} and let libstable-diffusion.so resolve it via DT_NEEDED; a copy from this artifact would only duplicate it."
             echo ""
             echo "Artifact contents:"
             (cd "$out" && ls -1 | sort)
