@@ -28,6 +28,10 @@ on:
         # difference at run time. Deliberately not a tag: the commit this run resolved
         # is recorded in the artifact manifest.
         default: "master"
+      version_label:
+        description: "Version string sd_version() reports (stamped as a local git tag); empty derives g<short sha>"
+        required: false
+        default: ""
       cuda_version:
         description: "CUDA Toolkit version for the Windows and Linux builds, aligned with SeasonTTS"
         required: false
@@ -114,6 +118,58 @@ jobs:
           git -C ggml fetch --depth 1 origin "${{ github.event.inputs.ggml_ref }}"
           git -C ggml checkout FETCH_HEAD
           git -C ggml rev-parse HEAD
+
+      # src/version.cpp can only report what CMakeLists.txt resolved with
+      # `git describe --tags`: the fork's history carries no tag, so an unstamped
+      # build answers sd_version() with "unknown" and nothing in the shipped DLL
+      # says which SeasonRealms revision it came from (sd_commit() carries the
+      # short sha only). A tag created on the checked-out commit - local to the
+      # runner, never pushed - makes git describe resolve to that exact string.
+      #
+      # Not -DSDCPP_BUILD_VERSION=<label>: CMakeLists.txt runs
+      # execute_process(COMMAND git describe --tags ... OUTPUT_VARIABLE
+      # SDCPP_BUILD_VERSION) straight into the same variable, so a -D value is
+      # overwritten before the fallback turns it into "unknown".
+      #
+      # The ggml tree (Replace ggml, above) is no longer the gitlink this commit
+      # records, and `git describe --dirty=+` - the exact command CMakeLists.txt
+      # runs - would append '+' to the label. The step marks that one path
+      # assume-unchanged and then asserts describe() agrees with the label, so a
+      # future layout that defeats the trick fails here instead of shipping a
+      # wrong version string.
+      - name: Stamp the version reported by sd_version()
+        shell: pwsh
+        env:
+          VERSION_LABEL: ${{ github.event.inputs.version_label }}
+        run: |
+          # A ref pinned to a tag already carries one, and that tag is the honest
+          # version: reuse it instead of stacking a second tag on the same commit.
+          $label = (& git tag --points-at HEAD | Select-Object -First 1)
+          if (-not $label) {
+            $label = $env:VERSION_LABEL
+            if (-not $label) {
+              $label = "g" + (& git rev-parse --short=12 HEAD)
+            }
+            & git tag --force $label HEAD
+            if ($LASTEXITCODE -ne 0) { throw "git tag '$label' failed with exit code $LASTEXITCODE (the label must be a valid tag name)" }
+          }
+
+          # assume-unchanged, not diff.ignoreSubmodules: git describe compares the
+          # gitlink against the submodule HEAD itself and ignores the diff config
+          # (measured), while a path marked assumed is skipped by that comparison.
+          # The index contents are untouched, so HEAD and the working tree still
+          # agree everywhere else and the CUDA cache / build dirs stay untracked.
+          & git update-index --assume-unchanged ggml
+          if ($LASTEXITCODE -ne 0) { throw "git update-index --assume-unchanged ggml failed with exit code $LASTEXITCODE" }
+
+          # Fail closed with the exact command CMakeLists.txt runs: a mismatch here
+          # means a wrong version string would ship instead of failing the build.
+          $described = (& git describe --tags --abbrev=7 --dirty=+) -join ''
+          if ($described -cne $label) {
+            throw "git describe reports '$described', but the label is '$label' - CMake would stamp the wrong version"
+          }
+          "SDCPP_VERSION_LABEL=$label" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "sd_version() will report: $label"
 
       # ggml's backend entry points are not in ggml.dll: with GGML_BACKEND_DL=ON
       # ggml-cpu / ggml-cuda / ggml-vulkan are MODULE libraries that ggml only
@@ -232,6 +288,23 @@ jobs:
             # phase when an outputfile is specified". -Xcudafe uses '=' so the flag string
             # carries no embedded quotes.
             '-DCMAKE_CUDA_FLAGS=-Xcudafe=--diag_suppress=177 -Xcudafe=--diag_suppress=550 -DGGML_MAX_NAME=160',
+            # nvcuda.dll is the NVIDIA *driver* API, not a redistributable runtime:
+            # no package ships it and a machine without an NVIDIA GPU does not have
+            # it at all. The CUDA backend's device probe
+            # (src/core/ggml_extend_backend.cpp, cuda_compiled_arch()) calls cuInit /
+            # cuDeviceGetByPCIBusId, which import from it. Imported eagerly, that one
+            # dependency makes LoadLibrary("stable-diffusion.dll") fail on such a
+            # machine and takes the CPU and Vulkan backends down with it. Delay-loaded,
+            # the import binds on first use only - and the probe is guarded by
+            # SD_USE_CUDA + sd_backend_is(backend, "CUDA"), so without a driver it is
+            # never reached and the same DLL serves GPU-less hosts. delayimp.lib is
+            # the MSVC stub that performs the deferred binding; without it the link
+            # fails on __delayLoadHelper2.
+            #
+            # Only this SHARED target gets the flag: ggml-cuda.dll is a MODULE library
+            # (CMAKE_MODULE_LINKER_FLAGS), and keeping its import eager is what lets
+            # ggml skip that backend cleanly when the driver is absent.
+            '-DCMAKE_SHARED_LINKER_FLAGS=/DELAYLOAD:nvcuda.dll delayimp.lib',
             '-DCMAKE_CUDA_ARCHITECTURES=${{ github.event.inputs.cuda_architectures }}'
           )
 
@@ -258,6 +331,52 @@ jobs:
             throw "stable-diffusion.dll not found"
           }
           Copy-Item $stableDiffusionDll.FullName -Destination $out -Force
+
+          # Two properties the package depends on are invisible once the artifact is
+          # downloaded, so they are asserted here instead: nvcuda.dll has to be a
+          # delay-load entry rather than a static import (see the Configure CMake
+          # comment), and the version label sd_version() reports has to be in the
+          # binary. dumpbin is on PATH because ilammy/msvc-dev-cmd exported the
+          # developer environment earlier in this job.
+          $dumpbin = (Get-Command dumpbin.exe -ErrorAction SilentlyContinue).Source
+          if (-not $dumpbin) { throw "dumpbin.exe is not on PATH - cannot verify the import table" }
+
+          # /imports is the only view that separates the two tables: it prints the
+          # static imports and then a "delay load imports" section. /dependents
+          # lists a DLL in either case (measured on a delay-loaded build), so it
+          # cannot tell them apart.
+          $imports = & $dumpbin /nologo /imports $stableDiffusionDll.FullName
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin /imports failed with exit code $LASTEXITCODE" }
+          $staticHeader = $imports | Select-String -SimpleMatch 'Section contains the following imports:' | Select-Object -First 1
+          $delayHeader  = $imports | Select-String -SimpleMatch 'Section contains the following delay load imports:' | Select-Object -First 1
+          $nvcudaHits   = @($imports | Select-String -Pattern '(?im)^\s*nvcuda\.dll\s*$')
+          $staticFrom   = if ($staticHeader) { $staticHeader.LineNumber } else { 0 }
+
+          if (-not $delayHeader) {
+            throw "stable-diffusion.dll has no delay-load import section - /DELAYLOAD:nvcuda.dll never reached the link line"
+          }
+          $eager = @($nvcudaHits | Where-Object { $_.LineNumber -gt $staticFrom -and $_.LineNumber -lt $delayHeader.LineNumber })
+          if ($eager.Count -gt 0) {
+            throw "stable-diffusion.dll imports nvcuda.dll statically (dumpbin /imports line $($eager[0].LineNumber)) - hosts without an NVIDIA driver cannot load it at all"
+          }
+          # ... and it has to still be referenced, as a delay-load entry: a missing
+          # entry would mean the switch was dropped together with the import and the
+          # CUDA driver probe silently disappeared from the build.
+          $deferred = @($nvcudaHits | Where-Object { $_.LineNumber -gt $delayHeader.LineNumber })
+          if ($deferred.Count -eq 0) {
+            throw "stable-diffusion.dll has no delay-load entry for nvcuda.dll - the CUDA driver probe is gone or is still a static import"
+          }
+          Write-Host ("nvcuda.dll delay-loaded (dumpbin /imports entry at line {0}, delay section starts at {1})" -f $deferred[0].LineNumber, $delayHeader.LineNumber)
+
+          # CMakeLists.txt compiles the label it read back from `git describe --tags`
+          # into src/version.cpp, so the string is in the binary verbatim.
+          $label = $env:SDCPP_VERSION_LABEL
+          if (-not $label) { throw "SDCPP_VERSION_LABEL is not set - the stamp step did not run" }
+          $bytes = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($stableDiffusionDll.FullName))
+          if (-not $bytes.Contains($label)) {
+            throw "stable-diffusion.dll does not contain the version label '$label' - sd_version() would report 'unknown'"
+          }
+          Write-Host "sd_version() reports: $label"
 
           $stableDiffusionLib = Get-ChildItem build -Recurse -File -Filter "stable-diffusion.lib" | Select-Object -First 1
           if ($stableDiffusionLib) {
@@ -445,6 +564,7 @@ jobs:
           @(
             "SDCPP_REPO: ${{ env.SDCPP_REPO }}",
             "SDCPP_REF: ${{ github.event.inputs.stable_diffusion_ref }}",
+            "SDCPP_VERSION: $env:SDCPP_VERSION_LABEL",
             "Enabled backends: cpu-all-variants, cuda12, vulkan",
             "Configuration: ${{ github.event.inputs.configuration }}",
             "GGML_REPO: ${{ env.GGML_REPO }}",
@@ -452,6 +572,7 @@ jobs:
             "GGML_MAX_NAME: 160",
             "GGML backend extensions: upstream mode (SD_USE_UPSTREAM_GGML=ON) - no INT8 convrot / SageAttention kernels",
             "CUDA runtime: not packaged - cudart / cublas / cublasLt come from cudacudnn-runtime",
+            "nvcuda.dll: delay-loaded (/DELAYLOAD:nvcuda.dll + delayimp.lib) - the CUDA driver probe binds on first use, so hosts without an NVIDIA driver still load this DLL for the CPU and Vulkan backends",
             "CUDA Toolkit version: ${{ github.event.inputs.cuda_version }}",
             "",
             "This build enables GGML_CPU_ALL_VARIANTS, CUDA and Vulkan in one stable-diffusion.dll and links the ggml runtime dynamically (SD_BUILD_SHARED_GGML_LIB=ON).",
@@ -503,6 +624,45 @@ jobs:
           git -C ggml fetch --depth 1 origin "${{ github.event.inputs.ggml_ref }}"
           git -C ggml checkout FETCH_HEAD
           git -C ggml rev-parse HEAD
+
+      # Same stamp as the Windows lane: CMakeLists.txt resolves the version it
+      # compiles into src/version.cpp with `git describe --tags`, and the fork's
+      # history carries no tag, so without one here sd_version() answers "unknown".
+      # The tag lives on the runner only; the step marks the replaced ggml gitlink
+      # assume-unchanged and asserts describe() agrees, so `--dirty=+` cannot turn
+      # the label into "<label>+".
+      - name: Stamp the version reported by sd_version()
+        env:
+          VERSION_LABEL: ${{ github.event.inputs.version_label }}
+        run: |
+          set -euo pipefail
+          # A ref pinned to a tag already carries one, and that tag is the honest
+          # version: reuse it instead of stacking a second tag on the same commit.
+          label="$(git tag --points-at HEAD | sed -n '1p')"
+          if [ -z "$label" ]; then
+            label="${VERSION_LABEL}"
+            if [ -z "$label" ]; then
+              label="g$(git rev-parse --short=12 HEAD)"
+            fi
+            git tag -f "$label" HEAD
+          fi
+
+          # assume-unchanged, not diff.ignoreSubmodules: git describe compares the
+          # gitlink against the submodule HEAD itself and ignores the diff config
+          # (measured), while a path marked assumed is skipped by that comparison.
+          # The index contents are untouched, so HEAD and the working tree still
+          # agree everywhere else.
+          git update-index --assume-unchanged ggml
+
+          # Fail closed with the exact command CMakeLists.txt runs: a mismatch here
+          # means a wrong version string would ship instead of failing the build.
+          described="$(git describe --tags --abbrev=7 --dirty=+)"
+          if [ "$described" != "$label" ]; then
+            echo "::error::git describe reports '$described', but the label is '$label' - CMake would stamp the wrong version" >&2
+            exit 1
+          fi
+          echo "SDCPP_VERSION_LABEL=$label" >> "$GITHUB_ENV"
+          echo "sd_version() will report: $label"
 
       # Same guard as the Windows lane, same symbol set, same filtering: see the
       # comment there for why GGML_BACKEND_DL=ON makes a direct call to a backend
@@ -633,6 +793,15 @@ jobs:
             exit 1
           fi
 
+          # CMakeLists.txt compiles the label it read back from `git describe --tags`
+          # into src/version.cpp, so the string is in the shared object verbatim - this
+          # proves both that the stamp ran before configure and that the label reached
+          # the shipped file.
+          if ! grep -a -q -- "$SDCPP_VERSION_LABEL" "$out/libstable-diffusion.so"; then
+            echo "sd_version() would report 'unknown': $SDCPP_VERSION_LABEL is not in libstable-diffusion.so" >&2
+            exit 1
+          fi
+
           # The ggml runtime this build linked against stays on the runner: the
           # SeasonGGML build-ggml.yml artifact is the single download source for it, and
           # a second copy in this artifact was only the same files again. Assert that
@@ -655,6 +824,7 @@ jobs:
           {
             echo "SDCPP_REPO: ${{ env.SDCPP_REPO }}"
             echo "SDCPP_REF: ${{ github.event.inputs.stable_diffusion_ref }}"
+            echo "SDCPP_VERSION: ${SDCPP_VERSION_LABEL}"
             echo "Enabled backends: cpu-all-variants, cuda12, vulkan"
             echo "Configuration: ${{ github.event.inputs.configuration }}"
             echo "GGML_REPO: ${{ env.GGML_REPO }}"
@@ -717,6 +887,45 @@ jobs:
           git -C ggml fetch --depth 1 origin "${{ github.event.inputs.ggml_ref }}"
           git -C ggml checkout FETCH_HEAD
           git -C ggml rev-parse HEAD
+
+      # Same stamp as the Windows lane: CMakeLists.txt resolves the version it
+      # compiles into src/version.cpp with `git describe --tags`, and the fork's
+      # history carries no tag, so without one here sd_version() answers "unknown".
+      # The tag lives on the runner only; the step marks the replaced ggml gitlink
+      # assume-unchanged and asserts describe() agrees, so `--dirty=+` cannot turn
+      # the label into "<label>+".
+      - name: Stamp the version reported by sd_version()
+        env:
+          VERSION_LABEL: ${{ github.event.inputs.version_label }}
+        run: |
+          set -euo pipefail
+          # A ref pinned to a tag already carries one, and that tag is the honest
+          # version: reuse it instead of stacking a second tag on the same commit.
+          label="$(git tag --points-at HEAD | sed -n '1p')"
+          if [ -z "$label" ]; then
+            label="${VERSION_LABEL}"
+            if [ -z "$label" ]; then
+              label="g$(git rev-parse --short=12 HEAD)"
+            fi
+            git tag -f "$label" HEAD
+          fi
+
+          # assume-unchanged, not diff.ignoreSubmodules: git describe compares the
+          # gitlink against the submodule HEAD itself and ignores the diff config
+          # (measured), while a path marked assumed is skipped by that comparison.
+          # The index contents are untouched, so HEAD and the working tree still
+          # agree everywhere else.
+          git update-index --assume-unchanged ggml
+
+          # Fail closed with the exact command CMakeLists.txt runs: a mismatch here
+          # means a wrong version string would ship instead of failing the build.
+          described="$(git describe --tags --abbrev=7 --dirty=+)"
+          if [ "$described" != "$label" ]; then
+            echo "::error::git describe reports '$described', but the label is '$label' - CMake would stamp the wrong version" >&2
+            exit 1
+          fi
+          echo "SDCPP_VERSION_LABEL=$label" >> "$GITHUB_ENV"
+          echo "sd_version() will report: $label"
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -891,6 +1100,15 @@ jobs:
             exit 1
           fi
 
+          # CMakeLists.txt compiles the label it read back from `git describe --tags`
+          # into src/version.cpp, so the string is in the Mach-O verbatim - this proves
+          # both that the stamp ran before configure and that the label reached the
+          # shipped file.
+          if ! grep -a -q -- "$SDCPP_VERSION_LABEL" "$out/libstable-diffusion.dylib"; then
+            echo "sd_version() would report 'unknown': $SDCPP_VERSION_LABEL is not in libstable-diffusion.dylib" >&2
+            exit 1
+          fi
+
           # Fail loudly if the runtime was built for plain macOS, for Intel, or as a fat
           # binary - such a library loads on the runner but not inside the Catalyst app.
           lib="$out/libstable-diffusion.dylib"
@@ -925,6 +1143,7 @@ jobs:
             echo "GGML backend extensions: upstream mode (SD_USE_UPSTREAM_GGML=ON) - no INT8 convrot / SageAttention kernels"
             echo "Configuration: ${{ github.event.inputs.configuration }}"
             echo "RID: ${RID}"
+            echo "SDCPP_VERSION: ${SDCPP_VERSION_LABEL}"
             echo "Target triple: ${ARCH}-apple-ios${{ github.event.inputs.maccatalyst_min_ios }}-macabi"
             echo "Linkage: static (SD_BUILD_SHARED_LIBS=OFF, GGML_BACKEND_DL=OFF), merged into a single libstable-diffusion.dylib"
             echo "Enabled backends: cpu (armv8.2-a+dotprod), metal, blas=${{ github.event.inputs.maccatalyst_blas }}"
@@ -993,6 +1212,45 @@ jobs:
           git -C ggml fetch --depth 1 origin "${{ github.event.inputs.ggml_ref }}"
           git -C ggml checkout FETCH_HEAD
           git -C ggml rev-parse HEAD
+
+      # Same stamp as the Windows lane: CMakeLists.txt resolves the version it
+      # compiles into src/version.cpp with `git describe --tags`, and the fork's
+      # history carries no tag, so without one here sd_version() answers "unknown".
+      # The tag lives on the runner only; the step marks the replaced ggml gitlink
+      # assume-unchanged and asserts describe() agrees, so `--dirty=+` cannot turn
+      # the label into "<label>+".
+      - name: Stamp the version reported by sd_version()
+        env:
+          VERSION_LABEL: ${{ github.event.inputs.version_label }}
+        run: |
+          set -euo pipefail
+          # A ref pinned to a tag already carries one, and that tag is the honest
+          # version: reuse it instead of stacking a second tag on the same commit.
+          label="$(git tag --points-at HEAD | sed -n '1p')"
+          if [ -z "$label" ]; then
+            label="${VERSION_LABEL}"
+            if [ -z "$label" ]; then
+              label="g$(git rev-parse --short=12 HEAD)"
+            fi
+            git tag -f "$label" HEAD
+          fi
+
+          # assume-unchanged, not diff.ignoreSubmodules: git describe compares the
+          # gitlink against the submodule HEAD itself and ignores the diff config
+          # (measured), while a path marked assumed is skipped by that comparison.
+          # The index contents are untouched, so HEAD and the working tree still
+          # agree everywhere else.
+          git update-index --assume-unchanged ggml
+
+          # Fail closed with the exact command CMakeLists.txt runs: a mismatch here
+          # means a wrong version string would ship instead of failing the build.
+          described="$(git describe --tags --abbrev=7 --dirty=+)"
+          if [ "$described" != "$label" ]; then
+            echo "::error::git describe reports '$described', but the label is '$label' - CMake would stamp the wrong version" >&2
+            exit 1
+          fi
+          echo "SDCPP_VERSION_LABEL=$label" >> "$GITHUB_ENV"
+          echo "sd_version() will report: $label"
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -1235,6 +1493,17 @@ jobs:
             exit 1
           fi
 
+          # CMakeLists.txt compiles the label it read back from `git describe --tags`
+          # into src/version.cpp, so the string is in the archives verbatim - this
+          # proves both that the stamp ran before configure and that the label reached
+          # the shipped slices (each slice is compiled separately, so each is checked).
+          for slice in ios-arm64 ios-arm64-simulator; do
+            if ! grep -a -q -- "$SDCPP_VERSION_LABEL" "$out/libstable-diffusion.xcframework/$slice/libstable-diffusion.a"; then
+              echo "sd_version() would report 'unknown': $SDCPP_VERSION_LABEL is not in the $slice archive" >&2
+              exit 1
+            fi
+          done
+
           # Record the archive checksums so they can be verified after download.
           # Transferring binaries through text-mode channels (sync tools, text
           # editors, some file shares) corrupts the Mach-O headers; this is how a
@@ -1245,6 +1514,7 @@ jobs:
           manifest="$out/README.txt"
           {
             echo "Platform: ${RID} (multi-backend xcframework carrying the device and arm64-simulator slices)"
+            echo "SDCPP_VERSION: ${SDCPP_VERSION_LABEL}"
             echo "Configuration: ${{ github.event.inputs.configuration }}"
             echo "SDCPP_REPO: https://github.com/${{ env.SDCPP_REPO }}"
             echo "SDCPP_REF: ${{ github.event.inputs.stable_diffusion_ref }}"
@@ -1313,6 +1583,45 @@ jobs:
           git -C ggml fetch --depth 1 origin "${{ github.event.inputs.ggml_ref }}"
           git -C ggml checkout FETCH_HEAD
           git -C ggml rev-parse HEAD
+
+      # Same stamp as the Windows lane: CMakeLists.txt resolves the version it
+      # compiles into src/version.cpp with `git describe --tags`, and the fork's
+      # history carries no tag, so without one here sd_version() answers "unknown".
+      # The tag lives on the runner only; the step marks the replaced ggml gitlink
+      # assume-unchanged and asserts describe() agrees, so `--dirty=+` cannot turn
+      # the label into "<label>+".
+      - name: Stamp the version reported by sd_version()
+        env:
+          VERSION_LABEL: ${{ github.event.inputs.version_label }}
+        run: |
+          set -euo pipefail
+          # A ref pinned to a tag already carries one, and that tag is the honest
+          # version: reuse it instead of stacking a second tag on the same commit.
+          label="$(git tag --points-at HEAD | sed -n '1p')"
+          if [ -z "$label" ]; then
+            label="${VERSION_LABEL}"
+            if [ -z "$label" ]; then
+              label="g$(git rev-parse --short=12 HEAD)"
+            fi
+            git tag -f "$label" HEAD
+          fi
+
+          # assume-unchanged, not diff.ignoreSubmodules: git describe compares the
+          # gitlink against the submodule HEAD itself and ignores the diff config
+          # (measured), while a path marked assumed is skipped by that comparison.
+          # The index contents are untouched, so HEAD and the working tree still
+          # agree everywhere else.
+          git update-index --assume-unchanged ggml
+
+          # Fail closed with the exact command CMakeLists.txt runs: a mismatch here
+          # means a wrong version string would ship instead of failing the build.
+          described="$(git describe --tags --abbrev=7 --dirty=+)"
+          if [ "$described" != "$label" ]; then
+            echo "::error::git describe reports '$described', but the label is '$label' - CMake would stamp the wrong version" >&2
+            exit 1
+          fi
+          echo "SDCPP_VERSION_LABEL=$label" >> "$GITHUB_ENV"
+          echo "sd_version() will report: $label"
 
       # The runner may carry only older NDKs, and the 16 KB page-size default
       # the Play deadline depends on exists from r28 on, so the requested NDK
@@ -1417,6 +1726,15 @@ jobs:
             exit 1
           fi
 
+          # CMakeLists.txt compiles the label it read back from `git describe --tags`
+          # into src/version.cpp, so the string is in the shared object verbatim - this
+          # proves both that the stamp ran before configure and that the label reached
+          # the shipped file.
+          if ! grep -a -q -- "$SDCPP_VERSION_LABEL" "$out/libstable-diffusion.so"; then
+            echo "sd_version() would report 'unknown': $SDCPP_VERSION_LABEL is not in libstable-diffusion.so" >&2
+            exit 1
+          fi
+
           # The ggml runtime this build linked against stays on the runner: the
           # SeasonGGML build-ggml.yml artifact is the single download source for it,
           # and a second copy inside the APK was only the same files again. Assert
@@ -1432,6 +1750,7 @@ jobs:
 
           {
             echo "Platform: ${RID} (ABI: ${ABI}; deployed under jniLibs/lib/${ABI})"
+            echo "SDCPP_VERSION: ${SDCPP_VERSION_LABEL}"
             echo "Android API level: ${ANDROID_API} (matches the app's minSdk)"
             echo "Configuration: ${{ github.event.inputs.configuration }}"
             echo "SDCPP_REPO: ${{ env.SDCPP_REPO }}"
