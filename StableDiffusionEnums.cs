@@ -7,9 +7,10 @@ namespace Season.Image;
 public enum StableDiffusionLogLevel
 {
     Debug = 0,
-    Info = 1,
-    Warn = 2,
-    Error = 3
+    Verbose = 1,
+    Info = 2,
+    Warn = 3,
+    Error = 4
 }
 
 public enum StableDiffusionCancelMode
@@ -41,7 +42,12 @@ public enum StableDiffusionPredictionType
     EdmV = 2,
     Flow = 3,
     FluxFlow = 4,
-    Flux2Flow = 5
+    SefiFlow = 5,
+    Minit2iFlow = 6,
+    SensenovaU1Flow = 7,
+    Flux3Flow = 8,
+    H3AvFlow = 9,
+    MingImageFlow = 10
 }
 
 public enum StableDiffusionLoraApplyMode
@@ -70,7 +76,10 @@ public enum StableDiffusionSampleMethod
     ErSde = 14,
     EulerCfgPp = 15,
     EulerACfgPp = 16,
-    EulerGe = 17
+    EulerGe = 17,
+    Dpmpp2MSde = 18,
+    Dpmpp2MSdeBt = 19,
+    Lms = 20
 }
 
 public enum StableDiffusionScheduler
@@ -86,7 +95,12 @@ public enum StableDiffusionScheduler
     KlOptimal = 8,
     Lcm = 9,
     BongTangent = 10,
-    Ltx2 = 11
+    Ltx2 = 11,
+    LogitNormal = 12,
+    Flux2 = 13,
+    Flux = 14,
+    Beta = 15,
+    LladaImage = 16
 }
 
 public enum StableDiffusionWeightType
@@ -125,5 +139,11 @@ public enum StableDiffusionWeightType
     MXFP4 = 39,
     NVFP4 = 40,
     Q1_0 = 41,
-    Auto = 42
+    Q2_0 = 42,
+    F8E4M3 = 43,
+    F8E5M2 = 44,
+
+    // sd_type_t's SD_TYPE_COUNT: "let the loader pick" (sd_ctx_params_init's own
+    // wtype default). It has to track the header - 42 is Q2_0 now, not COUNT.
+    Auto = 45
 }

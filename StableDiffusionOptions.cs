@@ -33,7 +33,6 @@ public sealed class StableDiffusionContextOptions
     public bool DiffusionFlashAttention { get; set; }
     public bool DiffusionConvDirect { get; set; }
     public bool TaePreviewOnly { get; set; }
-    public bool StreamLayers { get; set; }
     public bool OffloadToCpu { get; set; }
     public string? MaxVram { get; set; }
     public string? Backend { get; set; }

@@ -45,15 +45,20 @@ public sealed class StableDiffusionUpscalerContext : IDisposable
         ArgumentNullException.ThrowIfNull(inputImage);
 
         using var pinned = new PinnedNativeImage(inputImage);
-        var nativeImage = NativeMethods.upscale(_handle, pinned.Native, upscaleFactor);
+
+        if (!NativeMethods.upscale(_handle, pinned.Native, upscaleFactor, out var result))
+        {
+            throw new InvalidOperationException("Native upscale failed.");
+        }
 
         try
         {
-            return NativeMethods.CopyImage(nativeImage);
+            var images = NativeMethods.CopyImageGenerationResult(result);
+            return images.Count > 0 ? images[0] : new StableDiffusionImageResult(0, 0, 0, []);
         }
         finally
         {
-            NativeMethods.ReleaseReturnedImage(nativeImage);
+            NativeMethods.ReleaseReturnedImage(result);
         }
     }
 

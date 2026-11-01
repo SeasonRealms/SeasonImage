@@ -66,7 +66,6 @@ public sealed class StableDiffusionContext : IDisposable
         native.diffusion_flash_attn = NativeMethods.ToNativeBool(options.DiffusionFlashAttention);
         native.diffusion_conv_direct = NativeMethods.ToNativeBool(options.DiffusionConvDirect);
         native.tae_preview_only = NativeMethods.ToNativeBool(options.TaePreviewOnly);
-        native.stream_layers = NativeMethods.ToNativeBool(options.StreamLayers);
 
         _handle = NativeMethods.new_sd_ctx(ref native);
         if (_handle == IntPtr.Zero)
@@ -123,8 +122,7 @@ public sealed class StableDiffusionContext : IDisposable
         native.init_image = initImage?.Native ?? default;
         native.ref_images = refImages?.Pointer ?? IntPtr.Zero;
         native.ref_images_count = refImages?.Count ?? 0;
-        native.auto_resize_ref_image = NativeMethods.ToNativeBool(options.AutoResizeRefImage);
-        native.increase_ref_index = NativeMethods.ToNativeBool(options.IncreaseRefIndex);
+        native.ref_image_args = strings.Add(BuildRefImageArgs(options));
         native.mask_image = maskImage?.Native ?? default;
         native.control_image = controlImage?.Native ?? default;
 
@@ -152,19 +150,18 @@ public sealed class StableDiffusionContext : IDisposable
         native.sample_params.guidance.distilled_guidance = options.DistilledGuidanceScale;
         native.sample_params.extra_sample_args = strings.Add(options.ExtraSampleArguments);
 
-        IntPtr imagesPtr = NativeMethods.generate_image(_handle, ref native);
-        if (imagesPtr == IntPtr.Zero)
+        if (!NativeMethods.generate_image(_handle, ref native, out var result))
         {
             throw new InvalidOperationException("Native image generation failed.");
         }
 
         try
         {
-            return NativeMethods.CopyImages(imagesPtr, native.batch_count);
+            return NativeMethods.CopyImageGenerationResult(result);
         }
         finally
         {
-            NativeMethods.free_sd_images(imagesPtr, native.batch_count);
+            NativeMethods.ReleaseReturnedImage(result);
         }
     }
 
@@ -253,30 +250,24 @@ public sealed class StableDiffusionContext : IDisposable
             native.high_noise_sample_params.extra_sample_args = strings.Add(options.HighNoiseExtraSampleArguments);
         }
 
-        IntPtr framesPtr = IntPtr.Zero;
-        IntPtr audioPtr = IntPtr.Zero;
-        int frameCount = 0;
-        bool succeeded = NativeMethods.generate_video(_handle, ref native, out framesPtr, out frameCount, out audioPtr);
-        if (!succeeded)
+        if (!NativeMethods.generate_video(_handle, ref native, out var result))
         {
             throw new InvalidOperationException("Native video generation failed.");
         }
 
         try
         {
-            return new StableDiffusionVideoResult(NativeMethods.CopyImages(framesPtr, frameCount), native.fps);
+            var video = NativeMethods.CopyVideoGenerationResult(result);
+
+            // The result reports the frame rate the pipeline actually used; fall back
+            // to the requested one only when it comes back unset.
+            return video.Fps > 0
+                ? video
+                : new StableDiffusionVideoResult(video.Frames, native.fps > 0 ? native.fps : 16);
         }
         finally
         {
-            if (framesPtr != IntPtr.Zero)
-            {
-                NativeMethods.free_sd_images(framesPtr, frameCount);
-            }
-
-            if (audioPtr != IntPtr.Zero)
-            {
-                NativeMethods.free_sd_audio(audioPtr);
-            }
+            NativeMethods.free_sd_video_generation_result(result);
         }
     }
 
@@ -342,5 +333,32 @@ public sealed class StableDiffusionContext : IDisposable
         }
 
         return options.OffloadToCpu ? "cpu" : null;
+    }
+
+    /// <summary>
+    /// The reference-image switches became a key=value spec in the 0.27 ABI
+    /// (<c>ref_image_args</c>). AutoResizeRefImage keeps its meaning by spelling out
+    /// <c>resize_before_vae=true</c>; turning it off emits nothing, so the per-model
+    /// preset (what upstream consults when no key is given) still decides.
+    /// </summary>
+    private static string? BuildRefImageArgs(StableDiffusionImageGenerationOptions options)
+    {
+        if (!options.AutoResizeRefImage && !options.IncreaseRefIndex)
+        {
+            return null;
+        }
+
+        var args = new List<string>(2);
+        if (options.AutoResizeRefImage)
+        {
+            args.Add("resize_before_vae=true");
+        }
+
+        if (options.IncreaseRefIndex)
+        {
+            args.Add("ref_index_mode=increase");
+        }
+
+        return string.Join(',', args);
     }
 }

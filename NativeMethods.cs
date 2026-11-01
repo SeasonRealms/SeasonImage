@@ -15,6 +15,9 @@ internal static class NativeMethods
     private const string LibraryName = "stable-diffusion";
 #endif
 
+    // Mirrors sd_ctx_params_t field for field. sd_ctx_params_init() writes the whole
+    // struct, so a missing or reordered field does not merely misread one value - it
+    // overruns the managed allocation and corrupts everything that follows.
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativeSdCtxParams
     {
@@ -31,8 +34,11 @@ internal static class NativeMethods
         public IntPtr embeddings_connectors_path;
         public IntPtr vae_path;
         public IntPtr audio_vae_path;
+        public IntPtr audio_encoder_path;
         public IntPtr taesd_path;
         public IntPtr control_net_path;
+        public IntPtr ip_adapter_path;
+        public IntPtr motion_module_path;
         public IntPtr embeddings;
         public uint embedding_count;
         public IntPtr photo_maker_path;
@@ -50,19 +56,26 @@ internal static class NativeMethods
         public byte tae_preview_only;
         public byte diffusion_conv_direct;
         public byte vae_conv_direct;
-        public byte circular_x;
-        public byte circular_y;
         public byte force_sdxl_vae_conv_scale;
-        public byte chroma_use_dit_mask;
-        public byte chroma_use_t5_mask;
-        public int chroma_t5_mask_pad;
-        public byte qwen_image_zero_cond_t;
         public int vae_format;
         public IntPtr max_vram;
-        public byte stream_layers;
+        public byte disable_prefetch;
+        public byte eager_load;
         public IntPtr backend;
         public IntPtr params_backend;
+        public IntPtr split_mode;
+        public byte auto_fit;
         public IntPtr rpc_servers;
+        public IntPtr model_args;
+        public byte disable_segmented_compute;
+        public byte batched_cfg;
+        public float linear_scale;
+        public float attn_scale;
+        public IntPtr tokenizer;
+        public byte sage_attn;
+        public int conditioning_cache_size;
+        public IntPtr flash_attn_mode;
+        public IntPtr conv_direct_mode;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -129,11 +142,11 @@ internal static class NativeMethods
     {
         public byte enabled;
         public byte temporal_tiling;
-        public int tile_size_x;
-        public int tile_size_y;
+        public int tile_size_w;
+        public int tile_size_h;
         public float target_overlap;
-        public float rel_size_x;
-        public float rel_size_y;
+        public float rel_size_w;
+        public float rel_size_h;
         public IntPtr extra_tiling_args;
     }
 
@@ -191,6 +204,12 @@ internal static class NativeMethods
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSdImagePreprocessParams
+    {
+        public IntPtr rules;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct NativeSdImgGenParams
     {
         public IntPtr loras;
@@ -201,8 +220,9 @@ internal static class NativeMethods
         public NativeSdImage init_image;
         public IntPtr ref_images;
         public int ref_images_count;
-        public byte auto_resize_ref_image;
-        public byte increase_ref_index;
+        // auto_resize_ref_image / increase_ref_index collapsed into one key=value spec
+        // (resize_before_vae=..., ref_index_mode=...).
+        public IntPtr ref_image_args;
         public NativeSdImage mask_image;
         public int width;
         public int height;
@@ -212,11 +232,31 @@ internal static class NativeMethods
         public int batch_count;
         public NativeSdImage control_image;
         public float control_strength;
+        public NativeSdImage ip_adapter_image;
+        public float ip_adapter_strength;
         public NativeSdPmParams pm_params;
         public NativeSdPulidParams pulid_params;
         public NativeSdTilingParams vae_tiling_params;
         public NativeSdCacheParams cache;
         public NativeSdHiresParams hires;
+        public int qwen_image_layers;
+        public byte circular_x;
+        public byte circular_y;
+        public NativeSdImagePreprocessParams image_preprocess;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSdImageResult
+    {
+        public NativeSdImage image;
+        public IntPtr generation_info;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSdImageGenerationResult
+    {
+        public IntPtr items;
+        public int count;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -229,6 +269,12 @@ internal static class NativeMethods
         public int clip_skip;
         public NativeSdImage init_image;
         public NativeSdImage end_image;
+        public IntPtr ref_images;
+        public int ref_images_count;
+        public IntPtr ref_videos;
+        public int ref_videos_count;
+        public IntPtr ref_audios;
+        public int ref_audios_count;
         public IntPtr control_frames;
         public int control_frames_size;
         public int width;
@@ -244,6 +290,20 @@ internal static class NativeMethods
         public NativeSdTilingParams vae_tiling_params;
         public NativeSdCacheParams cache;
         public NativeSdHiresParams hires;
+        public byte circular_x;
+        public byte circular_y;
+        public NativeSdImagePreprocessParams image_preprocess;
+        public IntPtr ref_image_args;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSdVideoGenerationResult
+    {
+        public IntPtr frames;
+        public int frame_count;
+        public IntPtr audio;
+        public int fps;
+        public IntPtr generation_info;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -320,7 +380,14 @@ internal static class NativeMethods
     internal static extern void sd_img_gen_params_init(ref NativeSdImgGenParams img_gen_params);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    internal static extern IntPtr generate_image(IntPtr sd_ctx, ref NativeSdImgGenParams img_gen_params);
+    [return: MarshalAs(UnmanagedType.I1)]
+    internal static extern bool generate_image(
+        IntPtr sd_ctx,
+        ref NativeSdImgGenParams img_gen_params,
+        out IntPtr result);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern void free_sd_image_generation_result(IntPtr result);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern void sd_vid_gen_params_init(ref NativeSdVidGenParams vid_gen_params);
@@ -330,15 +397,10 @@ internal static class NativeMethods
     internal static extern bool generate_video(
         IntPtr sd_ctx,
         ref NativeSdVidGenParams vid_gen_params,
-        out IntPtr frames_out,
-        out int num_frames_out,
-        out IntPtr audio_out);
+        out IntPtr result);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    internal static extern void free_sd_images(IntPtr result_images, int num_images);
-
-    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    internal static extern void free_sd_audio(IntPtr audio);
+    internal static extern void free_sd_video_generation_result(IntPtr result);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern void sd_cancel_generation(IntPtr sd_ctx, int mode);
@@ -372,16 +434,15 @@ internal static class NativeMethods
     internal static extern void free_upscaler_ctx(IntPtr upscalerCtx);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    internal static extern NativeSdImage upscale(IntPtr upscalerCtx, NativeSdImage inputImage, uint upscaleFactor);
+    [return: MarshalAs(UnmanagedType.I1)]
+    internal static extern bool upscale(
+        IntPtr upscalerCtx,
+        NativeSdImage inputImage,
+        uint upscaleFactor,
+        out IntPtr result);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern int get_upscale_factor(IntPtr upscalerCtx);
-
-    [DllImport("ucrtbase", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern IntPtr malloc(nuint size);
-
-    [DllImport("ucrtbase", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    private static extern void free(IntPtr ptr);
 
     internal static string PtrToString(IntPtr ptr)
     {
@@ -431,21 +492,63 @@ internal static class NativeMethods
         }
     }
 
-    internal static void ReleaseReturnedImage(NativeSdImage image)
+    internal static void ReleaseReturnedImage(IntPtr result)
     {
-        if (image.data == IntPtr.Zero)
+        if (result != IntPtr.Zero)
         {
-            return;
+            free_sd_image_generation_result(result);
+        }
+    }
+
+    /// <summary>
+    /// Reads an <c>sd_image_generation_result_t*</c> - the out-parameter of
+    /// generate_image() and upscale(). Every item owns its pixels and its
+    /// generation_info; the whole result is handed back to
+    /// free_sd_image_generation_result() once copied.
+    /// </summary>
+    internal static IReadOnlyList<StableDiffusionImageResult> CopyImageGenerationResult(IntPtr result)
+    {
+        if (result == IntPtr.Zero)
+        {
+            return [];
         }
 
-        var wrapper = malloc((nuint)Marshal.SizeOf<NativeSdImage>());
-        if (wrapper == IntPtr.Zero)
+        var generation = Marshal.PtrToStructure<NativeSdImageGenerationResult>(result);
+        if (generation.items == IntPtr.Zero || generation.count <= 0)
         {
-            free(image.data);
-            return;
+            return [];
         }
 
-        Marshal.StructureToPtr(image, wrapper, false);
-        free_sd_images(wrapper, 1);
+        var copied = new List<StableDiffusionImageResult>(generation.count);
+        var stride = Marshal.SizeOf<NativeSdImageResult>();
+
+        for (var i = 0; i < generation.count; i++)
+        {
+            var item = Marshal.PtrToStructure<NativeSdImageResult>(IntPtr.Add(generation.items, i * stride));
+            if (item.image.data == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            copied.Add(CopyImage(item.image));
+        }
+
+        return copied;
+    }
+
+    /// <summary>
+    /// Reads an <c>sd_video_generation_result_t*</c>. The frames and the optional
+    /// audio track both belong to the result and are released with
+    /// free_sd_video_generation_result().
+    /// </summary>
+    internal static StableDiffusionVideoResult CopyVideoGenerationResult(IntPtr result)
+    {
+        if (result == IntPtr.Zero)
+        {
+            return new StableDiffusionVideoResult([], 0);
+        }
+
+        var video = Marshal.PtrToStructure<NativeSdVideoGenerationResult>(result);
+        return new StableDiffusionVideoResult(CopyImages(video.frames, video.frame_count), video.fps);
     }
 }
